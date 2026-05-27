@@ -1,0 +1,30 @@
+# Credentials and local user data
+config.json
+**/config.json
+.env
+.env.*
+
+# Downloaded media
+downloads/
+**/downloads/
+
+# Python caches and virtual environments
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+
+# PyInstaller output
+build/
+dist/
+
+# Local scratch and editor files
+tmp/
+benchmark_results.*
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
