@@ -5,7 +5,7 @@ a = Analysis(
     ['run_gui.py'],
     pathex=[],
     binaries=[],
-    datas=[('bili_downloader.py', '.'), ('gui.py', '.')],
+    datas=[],
     hiddenimports=['PIL._tkinter_finder', 'PIL.Image', 'customtkinter'],
     hookspath=[],
     hooksconfig={},

@@ -1,5 +1,5 @@
 """Bilibili 视频下载器 - 精美桌面版"""
-import sys, os, threading, json, subprocess, time, math
+import sys, os, threading, json, time, math
 from pathlib import Path
 from tkinter import filedialog
 from PIL import Image
@@ -36,6 +36,9 @@ class LogRedirector:
     def __init__(self, callback):
         self.callback = callback
     def write(self, text):
+        # 进度条用 \r 原地刷新，日志框只保留最后一段
+        if "\r" in text:
+            text = text.rsplit("\r", 1)[-1]
         if text.strip():
             self.callback(text)
     def flush(self):
@@ -406,6 +409,11 @@ class BiliApp(ctk.CTk):
         self._collection = None
         self._selected_ep_ids = []
         self._collection_url = ""
+        self._batch_lock = threading.Lock()
+        self._batch_done_count = 0
+        self._progress_lock = threading.Lock()
+        self._last_ui_pct = -1.0
+        self._last_ui_time = 0.0
 
         # 居中
         self.update_idletasks()
@@ -641,6 +649,10 @@ class BiliApp(ctk.CTk):
     def _log(self, msg, tag=""):
         if not hasattr(self, '_log_init'):
             return
+        # Tkinter 控件只能在主线程操作，后台线程的日志统一转发回主线程
+        if threading.current_thread() is not threading.main_thread():
+            self.after(0, lambda: self._log(msg, tag))
+            return
         tag_map = {"ok": "ok", "err": "err", "info": "info"}
         t = tag_map.get(tag, "")
         self.log_box.insert("end", msg + "\n", t)
@@ -809,9 +821,6 @@ class BiliApp(ctk.CTk):
 
     def _on_url_changed(self, event=None):
         raw = self.url_entry.get().strip()
-        ep_id = bd.extract_epid(raw)
-        is_cheese = "/cheese/" in raw.lower()
-        is_bangumi = "/bangumi/" in raw.lower()
         # 仅当用户手动编辑（非 _fetch_info 写入）时才清空
         if self._collection and raw != self._collection_url:
             self._collection = None
@@ -962,10 +971,18 @@ class BiliApp(ctk.CTk):
                          daemon=True).start()
 
     def _progress_cb(self, downloaded, total):
-        if total > 0:
-            pct = min(downloaded / total * 100, 100)
-            self.after(0, lambda: self.progress_bar.set(pct / 100))
-            self.after(0, lambda: self.pct_label.configure(text=f"{pct:.0f}%"))
+        if total <= 0:
+            return
+        pct = min(downloaded / total * 100, 100)
+        # 节流：进度变化 <0.5% 且距上次刷新 <0.2s 时跳过，避免高速下载刷爆事件队列
+        now = time.monotonic()
+        with self._progress_lock:
+            if pct < 100 and pct - self._last_ui_pct < 0.5 and now - self._last_ui_time < 0.2:
+                return
+            self._last_ui_pct = pct
+            self._last_ui_time = now
+        self.after(0, lambda: self.progress_bar.set(pct / 100))
+        self.after(0, lambda: self.pct_label.configure(text=f"{pct:.0f}%"))
 
     def _episode_status_cb(self, event):
         status = event["status"]
@@ -978,15 +995,17 @@ class BiliApp(ctk.CTk):
             self.after(0, lambda: self._log(
                 f"[{ordinal}/{total}] 开始下载：第{idx}集 {title}", "info"))
         elif status == "completed":
-            self._batch_done_count += 1
-            done = self._batch_done_count
+            with self._batch_lock:
+                self._batch_done_count += 1
+                done = self._batch_done_count
             self.after(0, lambda: self._log(
                 f"[{ordinal}/{total}] 下载完成：第{idx}集 {title}", "ok"))
             self.after(0, lambda: self.progress_bar.set(done / total))
             self.after(0, lambda: self.pct_label.configure(text=f"{done}/{total}"))
         elif status == "failed":
-            self._batch_done_count += 1
-            done = self._batch_done_count
+            with self._batch_lock:
+                self._batch_done_count += 1
+                done = self._batch_done_count
             err = event.get("error", "")
             self.after(0, lambda: self._log(
                 f"[{ordinal}/{total}] 下载失败：第{idx}集 {title}：{err}", "err"))
@@ -1015,6 +1034,8 @@ class BiliApp(ctk.CTk):
                 n_sel = len(selected_ids)
                 self._log(f"{type_name}：{collection['title']}", "info")
                 self._log(f"共 {n_eps} 集，已选择 {n_sel} 集，并发数 {max_workers}", "info")
+                if max_workers >= 4:
+                    self._log("提示：大量长视频使用 4 并发可能触发网络超时，程序会自动重试；若仍失败可改为 2 并发继续断点续传。", "info")
 
                 self._batch_done_count = 0
                 self._batch_total = n_sel
@@ -1022,14 +1043,16 @@ class BiliApp(ctk.CTk):
                 summary = bd.download_selected_episodes(
                     collection, selected_ids, out, quality,
                     stop_event=self._stop_event,
-                    progress_callback=self._progress_cb,
+                    progress_callback=None,
                     max_workers=max_workers,
                     episode_status_callback=self._episode_status_cb,
                 )
             elif bvid:
+                # quiet=True: 进度条文本不进日志框，字节进度走 _progress_cb
                 ok = bd.download_single(bvid, out, quality,
                                          stop_event=self._stop_event,
-                                         progress_callback=self._progress_cb)
+                                         progress_callback=self._progress_cb,
+                                         quiet=True)
                 if not ok and not self._stop_event.is_set():
                     failed = True
                 if self.cover_v.get():

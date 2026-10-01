@@ -17,14 +17,13 @@ if sys.platform == "win32" and sys.stdout is not None:
     except AttributeError:
         sys.stdout = _io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 import json
-import math
 import time
-import hashlib
+import shutil
 import subprocess
 import urllib.parse
+import random
 from pathlib import Path
 from typing import Optional
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 
@@ -44,11 +43,10 @@ QUALITY_MAP = {
     "480P": 32, "360P": 16, "240P": 6,
 }
 
-# 音质映射
-AUDIO_QUALITY = {
-    "Hi-Res无损": 30251, "杜比全景声": 30250, "192K": 30280,
-    "132K": 30232, "64K": 30216,
-}
+# 音质排序: 数值越大音质越好。
+# 注意 30250(杜比全景声) / 30251(Hi-Res) 的 id 数值小于 30280(192K)，
+# 但实际音质更高，不能直接按 id 降序排。
+AUDIO_RANK = {30216: 0, 30232: 1, 30280: 2, 30250: 3, 30251: 4}
 
 
 # ─── 工具函数 ────────────────────────────────────────────────────────────
@@ -57,9 +55,16 @@ def safe_filename(name: str) -> str:
     return re.sub(r'[\\/:*?"<>|]', "_", name).strip()
 
 
+def _config_path() -> Path:
+    """config.json 固定放在脚本/exe 所在目录，避免 CWD 不同导致登录态丢失。"""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).parent / "config.json"
+    return Path(__file__).parent / "config.json"
+
+
 def get_sessdata() -> str:
     """从配置文件读取 SESSDATA (可选)"""
-    cfg = Path("config.json")
+    cfg = _config_path()
     if cfg.exists():
         data = json.loads(cfg.read_text(encoding="utf-8"))
         return data.get("sessdata", "")
@@ -68,7 +73,7 @@ def get_sessdata() -> str:
 
 def get_cookie_string() -> str:
     """读取完整登录 Cookie，同时兼容旧版仅保存 SESSDATA 的配置。"""
-    cfg = Path("config.json")
+    cfg = _config_path()
     if cfg.exists():
         data = json.loads(cfg.read_text(encoding="utf-8"))
         if data.get("cookie"):
@@ -96,7 +101,7 @@ def save_cookie_string(cookie: str) -> dict:
     if not sessdata:
         raise Exception("Cookie 中未找到 SESSDATA，请粘贴已登录的 bilibili.com 请求 Cookie")
     cfg = {"sessdata": sessdata, "cookie": cookie, "cookies": cookies}
-    Path("config.json").write_text(
+    _config_path().write_text(
         json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     return cfg
@@ -157,23 +162,23 @@ def get_playurl(aid: int, cid: int, qn: int = 80, fourk: bool = True) -> dict:
     return data["data"]
 
 
-def get_dash_audio(audio_qn: int = 30280):
-    """获取纯音频流播放地址 (用于下载音频)"""
-    pass  # 与 video 共用 playurl, 只需从 dash 提取 audio
-
-
-def get_season_info(ep_id: int, is_cheese: bool = False) -> dict:
-    """获取番剧/课程信息
+def get_season_info(ep_id: Optional[int] = None, season_id: Optional[int] = None,
+                    is_cheese: bool = False) -> dict:
+    """获取番剧/课程信息，ep_id 与 season_id 至少提供一个。
 
     Args:
         ep_id: 番剧/课程的 EP ID
+        season_id: 番剧/课程的整季 SS ID
         is_cheese: 是否为 B站课程 (cheese)
     """
+    if ep_id is None and season_id is None:
+        raise Exception("获取系列信息需要 ep_id 或 season_id")
+    params = {"ep_id": ep_id} if ep_id is not None else {"season_id": season_id}
     if is_cheese:
-        url = f"{BASE_URL}/pugv/view/web/season?ep_id={ep_id}"
+        url = f"{BASE_URL}/pugv/view/web/season"
     else:
-        url = f"{BASE_URL}/pgc/view/web/season?ep_id={ep_id}"
-    resp = requests.get(url, headers=build_headers(), timeout=15)
+        url = f"{BASE_URL}/pgc/view/web/season"
+    resp = requests.get(url, params=params, headers=build_headers(), timeout=15)
     data = parse_api_response(resp, "获取课程信息" if is_cheese else "获取番剧信息")
     if data["code"] != 0:
         type_name = "课程" if is_cheese else "番剧"
@@ -298,72 +303,100 @@ def get_series_info(series_id: int) -> list:
     return data["data"]["archives"]
 
 
-def get_playlist(bvid: str) -> list:
-    """获取视频分P列表"""
-    info = get_video_info(bvid)
-    pages = info.get("pages", [])
-    if not pages:
-        return [{"cid": info["cid"], "part": info["title"], "page": 1}]
-    return pages
-
-
 # ─── 下载核心 ────────────────────────────────────────────────────────────
 
 def download_stream(url: str, filepath: Path, desc: str = "",
-                     stop_event=None, progress_callback=None) -> bool:
+                     stop_event=None, progress_callback=None, quiet: bool = False,
+                     max_retries: int = 5) -> bool:
     """下载单个数据流, 支持断点续传"""
-    headers = build_headers()
     temp_path = filepath.with_suffix(filepath.suffix + ".tmp")
-    resume_size = 0
 
-    if temp_path.exists():
-        resume_size = temp_path.stat().st_size
-        headers["Range"] = f"bytes={resume_size}-"
+    for attempt in range(max_retries + 1):
+        if stop_event and stop_event.is_set():
+            return False
 
-    resp = requests.get(url, headers=headers, stream=True, timeout=60)
-    if resp.status_code == 416:
-        total = int(resp.headers.get("content-length", 0))
-        if resume_size >= total:
-            temp_path.rename(filepath)
-            return True
-    elif resp.status_code == 206 or resp.status_code == 200:
-        if resume_size > 0 and resp.status_code == 200:
-            resume_size = 0
+        headers = build_headers()
+        resume_size = temp_path.stat().st_size if temp_path.exists() else 0
+        if resume_size:
+            headers["Range"] = f"bytes={resume_size}-"
 
-    total = int(resp.headers.get("content-length", 0)) + resume_size
-    mode = "ab" if resume_size > 0 else "wb"
-
-    if resume_size > 0:
-        print(f"  断点续传: {resume_size / 1024 / 1024:.1f}MB / {total / 1024 / 1024:.1f}MB")
-    if progress_callback and total:
-        progress_callback(0, total)
-
-    with open(temp_path, mode) as f:
+        resp = None
         downloaded = resume_size
-        last_print = 0
-        for chunk in resp.iter_content(chunk_size=8192):
-            if stop_event and stop_event.is_set():
-                print("  ⏹ 已取消")
-                return False
-            if chunk:
-                f.write(chunk)
-                downloaded += len(chunk)
-                if total:
-                    pct = downloaded / total * 100
-                    if progress_callback:
-                        progress_callback(downloaded, total)
-                    if pct - last_print >= 2 or downloaded - last_print >= 2 * 1024 * 1024:
-                        bar_len = 30
-                        filled = int(bar_len * downloaded / total)
-                        bar = "█" * filled + "░" * (bar_len - filled)
-                        print(f"\r  {desc} [{bar}] {pct:.1f}% ({downloaded / 1024 / 1024:.1f}/{total / 1024 / 1024:.1f}MB)", end="")
-                        last_print = pct
-    print()
+        total = 0
+        try:
+            resp = requests.get(url, headers=headers, stream=True, timeout=(15, 120))
 
-    if total and downloaded >= total:
-        temp_path.rename(filepath)
-        return True
-    return False
+            if resp.status_code == 416:
+                if resume_size > 0:
+                    temp_path.rename(filepath)
+                    return True
+                raise Exception("服务器拒绝断点范围请求 (HTTP 416)")
+
+            if resp.status_code not in (200, 206):
+                detail = resp.text[:120] if resp.text else ""
+                raise Exception(f"HTTP {resp.status_code} {detail}".strip())
+
+            if resume_size > 0 and resp.status_code == 200:
+                # CDN 没接受 Range，重新下载该流，避免把完整响应追加到旧 tmp。
+                resume_size = 0
+                downloaded = 0
+
+            total = int(resp.headers.get("content-length", 0)) + resume_size
+            mode = "ab" if resume_size > 0 else "wb"
+
+            if resume_size > 0 and not quiet:
+                print(f"  断点续传: {resume_size / 1024 / 1024:.1f}MB / {total / 1024 / 1024:.1f}MB")
+            if progress_callback and total:
+                progress_callback(downloaded, total)
+
+            with open(temp_path, mode) as f:
+                last_print = 0
+                for chunk in resp.iter_content(chunk_size=1024 * 256):
+                    if stop_event and stop_event.is_set():
+                        if not quiet:
+                            print("  ⏹ 已取消")
+                        return False
+                    if chunk:
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        if total:
+                            pct = downloaded / total * 100
+                            if progress_callback:
+                                progress_callback(downloaded, total)
+                            if not quiet and (pct - last_print >= 2 or downloaded - last_print >= 2 * 1024 * 1024):
+                                bar_len = 30
+                                filled = int(bar_len * downloaded / total)
+                                bar = "█" * filled + "░" * (bar_len - filled)
+                                print(f"\r  {desc} [{bar}] {pct:.1f}% ({downloaded / 1024 / 1024:.1f}/{total / 1024 / 1024:.1f}MB)", end="")
+                                last_print = pct
+
+            if not quiet:
+                print()
+
+            if not total or downloaded >= total:
+                # total==0 时服务器未返回 Content-Length（如 chunked 传输），
+                # 流正常结束即视为完整。
+                temp_path.rename(filepath)
+                return True
+
+            raise Exception(f"连接提前结束: {downloaded}/{total} bytes")
+        except requests.RequestException as e:
+            last_error = f"{type(e).__name__}: {e}"
+        except Exception as e:
+            last_error = str(e)
+        finally:
+            if resp is not None:
+                resp.close()
+
+        if stop_event and stop_event.is_set():
+            return False
+        if attempt < max_retries:
+            delay = min(2 ** attempt, 20) + random.random()
+            if not quiet:
+                print(f"  ⚠ {desc} 中断，{delay:.1f}s 后重试 ({attempt + 1}/{max_retries}): {last_error}")
+            time.sleep(delay)
+
+    raise Exception(f"{desc or '数据流'}下载失败，已重试 {max_retries} 次: {last_error}")
 
 
 def merge_video_audio(video_path: Path, audio_path: Path, output_path: Path) -> bool:
@@ -385,6 +418,9 @@ def merge_video_audio(video_path: Path, audio_path: Path, output_path: Path) -> 
         video_path.unlink(missing_ok=True)
         audio_path.unlink(missing_ok=True)
         return True
+    except FileNotFoundError:
+        print("  ✗ 未找到 ffmpeg，无法合并音视频；请安装 FFmpeg 并确认其在 PATH 中")
+        return False
     except subprocess.CalledProcessError as e:
         print(f"  ✗ 合并失败: {e.stderr.decode('utf-8', errors='replace')[:200]}")
         return False
@@ -392,8 +428,17 @@ def merge_video_audio(video_path: Path, audio_path: Path, output_path: Path) -> 
 
 # ─── 选择最佳画质/音质 ───────────────────────────────────────────────────
 
-def select_best_quality(playurl_data: dict) -> tuple:
-    """从 dash 数据中选择最佳画质和音质"""
+def select_best_quality(playurl_data: dict, target_qn: Optional[int] = None) -> tuple:
+    """从 dash 数据中选择画质和音质。
+
+    Args:
+        target_qn: 期望的画质 qn 值；None 表示取最高画质。
+            实际选取不超过 target_qn 的最高流（不存在时取最低流），
+            否则用户选 480P 也会下回 4K。
+
+    Returns:
+        (video_stream, audio_stream)，找不到时对应项为 None。
+    """
     dash = playurl_data.get("dash")
     if not dash:
         # flv 格式
@@ -402,35 +447,52 @@ def select_best_quality(playurl_data: dict) -> tuple:
             return video_list[0], None
         return None, None
 
-    # 视频流: 按质量降序
+    # 视频流: 优先取不超过目标 qn 的最高流
     videos = dash.get("video", [])
     if not videos:
         return None, None
-    videos.sort(key=lambda v: v.get("id", 0), reverse=True)
-    best_video = videos[0]
+    if target_qn is None:
+        best_video = max(videos, key=lambda v: v.get("id", 0))
+    else:
+        pool = [v for v in videos if v.get("id", 0) <= target_qn] or videos
+        best_video = max(pool, key=lambda v: v.get("id", 0))
 
-    # 音频流: 按质量降序
-    audios = dash.get("audio", [])
-    audios.sort(key=lambda a: a.get("id", 0), reverse=True)
-    best_audio = audios[0] if audios else None
+    # 音频流: 按 AUDIO_RANK 排序；Hi-Res/杜比不在 dash.audio 里，
+    # 而是单独挂在 flac/dolby 字段下，需要合并后再选。
+    audios = list(dash.get("audio", []))
+    audios += dash.get("flac", {}).get("audio", []) or []
+    audios += dash.get("dolby", {}).get("audio", []) or []
+    best_audio = max(audios, key=lambda a: AUDIO_RANK.get(a.get("id", 0), -1),
+                     default=None)
 
     return best_video, best_audio
 
 
 def download_playurl_streams(title: str, part: str, playurl: dict, output_dir: Path,
-                             stop_event=None, progress_callback=None) -> bool:
+                             quality: str = "1080P",
+                             stop_event=None, progress_callback=None,
+                             quiet: bool = False) -> bool:
     """保存已获得的播放流，用于普通视频与课程共用下载/合并流程。"""
-    video_stream, audio_stream = select_best_quality(playurl)
+    qn = QUALITY_MAP.get(quality, 80)
+    video_stream, audio_stream = select_best_quality(playurl, target_qn=qn)
 
     if not video_stream:
-        print("  ✗ 未找到可用视频流")
+        if not quiet:
+            print("  ✗ 未找到可用视频流")
         return False
 
     vid_url = video_stream.get("base_url") or video_stream.get("baseUrl", "")
     aud_url = audio_stream.get("base_url") or audio_stream.get("baseUrl", "") if audio_stream else None
 
     if not vid_url:
-        print("  ✗ 视频URL为空")
+        if not quiet:
+            print("  ✗ 视频URL为空")
+        return False
+
+    # 需要合并时先确认 ffmpeg 可用，避免下完才发现装不了
+    if aud_url and shutil.which("ffmpeg") is None:
+        if not quiet:
+            print("  ✗ 未检测到 ffmpeg（音视频合并必需），请安装 FFmpeg 后重试")
         return False
 
     video_dir = output_dir / title
@@ -438,52 +500,67 @@ def download_playurl_streams(title: str, part: str, playurl: dict, output_dir: P
 
     ext = "m4s" if "dash" in playurl else "flv"
     vid_path = video_dir / f"{part}_video.{ext}"
-    print("  📥 下载视频流...")
+    if not quiet:
+        print("  📥 下载视频流...")
     if not vid_path.exists():
         if not download_stream(vid_url, vid_path, desc="视频",
-                               stop_event=stop_event, progress_callback=progress_callback):
+                               stop_event=stop_event, progress_callback=progress_callback,
+                               quiet=quiet):
             if stop_event and stop_event.is_set():
                 return False
-            print("  ✗ 视频下载失败")
+            if not quiet:
+                print("  ✗ 视频下载失败")
             return False
     else:
-        print("  ✓ 视频文件已存在, 跳过")
+        if not quiet:
+            print("  ✓ 视频文件已存在, 跳过")
 
     if aud_url:
         aud_path = video_dir / f"{part}_audio.{ext}"
-        print("  📥 下载音频流...")
+        if not quiet:
+            print("  📥 下载音频流...")
         if not aud_path.exists():
             if not download_stream(aud_url, aud_path, desc="音频",
-                                   stop_event=stop_event, progress_callback=progress_callback):
+                                   stop_event=stop_event, progress_callback=progress_callback,
+                                   quiet=quiet):
                 if stop_event and stop_event.is_set():
                     return False
-                print("  ✗ 音频下载失败")
+                if not quiet:
+                    print("  ✗ 音频下载失败")
                 return False
         else:
-            print("  ✓ 音频文件已存在, 跳过")
+            if not quiet:
+                print("  ✓ 音频文件已存在, 跳过")
 
         output_path = video_dir / f"{part}.mp4"
-        print("  🔗 合并音视频...")
+        if not quiet:
+            print("  🔗 合并音视频...")
         if merge_video_audio(vid_path, aud_path, output_path):
-            print(f"  ✓ 下载完成: {output_path}")
+            if not quiet:
+                print(f"  ✓ 下载完成: {output_path}")
             return True
-        print("  ⚠ 合并失败, 保留单独文件")
+        if not quiet:
+            print("  ⚠ 合并失败, 保留单独文件")
         return False
 
     output_path = video_dir / f"{part}.mp4"
     vid_path.rename(output_path)
-    print(f"  ✓ 下载完成: {output_path}")
+    if not quiet:
+        print(f"  ✓ 下载完成: {output_path}")
     return True
 
 
 def download_single(bvid: str, output_dir: Path, quality: str = "1080P",
-                    page: int = 0, stop_event=None, progress_callback=None) -> bool:
+                    page: int = 0, stop_event=None, progress_callback=None,
+                    quiet: bool = False) -> bool:
     """下载单个视频"""
-    print(f"\n📺 获取视频信息: {bvid}")
+    if not quiet:
+        print(f"\n📺 获取视频信息: {bvid}")
     try:
         info = get_video_info(bvid)
     except Exception as e:
-        print(f"  ✗ {e}")
+        if not quiet:
+            print(f"  ✗ {e}")
         return False
 
     title = safe_filename(info["title"])
@@ -494,7 +571,8 @@ def download_single(bvid: str, output_dir: Path, quality: str = "1080P",
         # 下载指定分P
         idx = page - 1
         if idx >= len(pages):
-            print(f"  ✗ 只有 {len(pages)} 个分P")
+            if not quiet:
+                print(f"  ✗ 只有 {len(pages)} 个分P")
             return False
         p = pages[idx]
         cid = p["cid"]
@@ -504,21 +582,26 @@ def download_single(bvid: str, output_dir: Path, quality: str = "1080P",
         part = title
 
     qn = QUALITY_MAP.get(quality, 80)
-    print(f"  标题: {title}")
-    print(f"  分P:  {part}")
-    print(f"  画质: {quality} (qn={qn})")
+    if not quiet:
+        print(f"  标题: {title}")
+        print(f"  分P:  {part}")
+        print(f"  画质: {quality} (qn={qn})")
 
-    print(f"  获取播放地址...")
+    if not quiet:
+        print(f"  获取播放地址...")
     playurl = get_playurl(aid, cid, qn)
 
     return download_playurl_streams(title, part, playurl, output_dir,
+                                    quality=quality,
                                     stop_event=stop_event,
-                                    progress_callback=progress_callback)
+                                    progress_callback=progress_callback,
+                                    quiet=quiet)
 
 
 def download_course_episode(course: dict, episode: dict, output_dir: Path,
                              quality: str = "1080P", stop_event=None,
-                             progress_callback=None, part_prefix: str = "") -> bool:
+                             progress_callback=None, part_prefix: str = "",
+                             quiet: bool = False) -> bool:
     """下载课程中的单个课时。"""
     ep_id = episode.get("id")
     aid = episode.get("aid")
@@ -530,19 +613,23 @@ def download_course_episode(course: dict, episode: dict, output_dir: Path,
     ep_title = safe_filename(episode.get("title", f"EP{ep_id}"))
     part = safe_filename(f"{part_prefix}{ep_title}") if part_prefix else ep_title
     qn = QUALITY_MAP.get(quality, 80)
-    print(f"\n📺 获取课程课时: {part}")
-    print(f"  课程: {title}")
-    print(f"  画质: {quality} (qn={qn})")
-    print("  获取课程播放地址...")
+    if not quiet:
+        print(f"\n📺 获取课程课时: {part}")
+        print(f"  课程: {title}")
+        print(f"  画质: {quality} (qn={qn})")
+        print("  获取课程播放地址...")
     playurl = get_course_playurl(aid, cid, ep_id, qn)
     return download_playurl_streams(title, part, playurl, output_dir,
+                                    quality=quality,
                                     stop_event=stop_event,
-                                    progress_callback=progress_callback)
+                                    progress_callback=progress_callback,
+                                    quiet=quiet)
 
 
 def download_bangumi_episode(collection_title: str, episode: dict, output_dir: Path,
-                             quality: str = "1080P", stop_event=None,
-                             progress_callback=None, part_prefix: str = "") -> bool:
+                              quality: str = "1080P", stop_event=None,
+                              progress_callback=None, part_prefix: str = "",
+                              quiet: bool = False) -> bool:
     """下载番剧中的单集。使用 PGC 播放接口以兼容会员番剧。"""
     ep_id = episode.get("ep_id")
     aid = episode.get("aid")
@@ -554,17 +641,19 @@ def download_bangumi_episode(collection_title: str, episode: dict, output_dir: P
     ep_title = safe_filename(episode.get("title", f"EP{ep_id}"))
     part = safe_filename(f"{part_prefix}{ep_title}") if part_prefix else ep_title
     qn = QUALITY_MAP.get(quality, 80)
-    print(f"\n📺 获取番剧: {part}")
-    print(f"  系列: {title}")
-    print(f"  画质: {quality} (qn={qn})")
-    print("  获取番剧播放地址...")
+    if not quiet:
+        print(f"\n📺 获取番剧: {part}")
+        print(f"  系列: {title}")
+        print(f"  画质: {quality} (qn={qn})")
+        print("  获取番剧播放地址...")
     try:
         playurl = get_bangumi_playurl(aid, cid, ep_id, qn)
     except Exception:
         playurl = get_playurl(aid, cid, qn)
     return download_playurl_streams(title, part, playurl, output_dir,
                                     stop_event=stop_event,
-                                    progress_callback=progress_callback)
+                                    progress_callback=progress_callback,
+                                    quiet=quiet)
 
 
 def download_selected_episodes(collection: dict, selected_ep_ids: list,
@@ -631,13 +720,13 @@ def download_selected_episodes(collection: dict, selected_ep_ids: list,
                 ok = download_course_episode(
                     collection["raw"], ep["raw"], output_dir, quality,
                     stop_event=stop_event, progress_callback=progress_callback,
-                    part_prefix=prefix,
+                    part_prefix=prefix, quiet=True,
                 )
             else:
                 ok = download_bangumi_episode(
                     collection_title, ep, output_dir, quality,
                     stop_event=stop_event, progress_callback=progress_callback,
-                    part_prefix=prefix,
+                    part_prefix=prefix, quiet=True,
                 )
 
             if ok:
@@ -661,7 +750,6 @@ def download_selected_episodes(collection: dict, selected_ep_ids: list,
                         "error": "下载未完成"}
         except Exception as e:
             err_msg = str(e)
-            print(f"  ✗ 第{ep.get('index', '?')}集下载失败: {err_msg}")
             if episode_status_callback:
                 episode_status_callback({"status": "failed", "ep_id": ep["ep_id"],
                                         "index": ep["index"], "title": ep_title,
@@ -786,55 +874,67 @@ def download_batch(url_or_bvid: str, output_dir: Path, quality: str = "1080P",
 
     # 处理番剧/课程
     if ep_id or ss_id:
-        sid_val = ss_id or ep_id
         type_name = "课程" if is_cheese else "番剧"
-        print(f"\n📺 检测到{type_name} ep_id={sid_val}")
-        season = get_season_info(sid_val, is_cheese=is_cheese)
+        ident = f"ep_id={ep_id}" if ep_id else f"season_id={ss_id}"
+        print(f"\n📺 检测到{type_name} {ident}")
+        season = get_season_info(ep_id=ep_id, season_id=ss_id, is_cheese=is_cheese)
+        episodes = season.get("episodes", [])
+        season_title = season.get("title", season.get("season_title", "未知"))
 
-        if is_cheese:
-            episodes = season.get("episodes", [])
-            selected = next((item for item in episodes if item.get("id") == ep_id), None)
-            if ep_id and selected:
-                ok = download_course_episode(season, selected, output_dir, quality,
-                                             stop_event=stop_event,
-                                             progress_callback=progress_callback)
-                if not ok and not (stop_event and stop_event.is_set()):
-                    raise Exception("课程课时下载未完成")
-                return
-            if ep_id:
-                raise Exception(f"课程中未找到课时 ep{ep_id}")
+        # ep 单集链接只下载该集（与 GUI 默认一致），ss 整季链接下载全部。
+        # 整季模式加序号前缀，避免不同集同名文件互相覆盖。
+        if ep_id:
+            selected = next((ep for ep in episodes if ep.get("id") == ep_id), None)
+            if selected is None:
+                raise Exception(f"{type_name}中未找到 ep{ep_id}")
+            batch = [(selected, "")]
         else:
-            episodes = season.get("episodes", [])
+            batch = [(ep, f"{i:03d}_") for i, ep in enumerate(episodes, 1)]
+            print(f"   共 {len(batch)} 集")
 
-        print(f"   共 {len(episodes)} 集")
-        for i, ep in enumerate(episodes):
+        for i, (ep, prefix) in enumerate(batch, 1):
             if stop_event and stop_event.is_set():
                 print("⏹ 已停止")
                 return
+            ep_title = safe_filename(
+                ep.get("long_title") or ep.get("share_copy")
+                or ep.get("title") or f"EP{i}")
+            print(f"\n[{i}/{len(batch)}] {ep_title}")
             if is_cheese:
-                print(f"\n[{i+1}/{len(episodes)}] {ep.get('title', f'EP{i+1}')}")
                 ok = download_course_episode(season, ep, output_dir, quality,
                                              stop_event=stop_event,
-                                             progress_callback=progress_callback)
-                if not ok and not (stop_event and stop_event.is_set()):
-                    raise Exception("课程课时下载未完成")
-                continue
-            bv = ep.get("bvid", "")
-            if not bv:
-                # 课程可能没有 bvid，尝试用 aid 获取
-                aid = ep.get("aid", ep.get("id", ""))
-                if aid:
-                    try:
-                        info = get_video_info_by_aid(aid)
-                        bv = info.get("bvid", "")
-                    except:
-                        pass
-            if not bv:
-                print(f"  ⚠ 第{i+1}集无视频信息，跳过")
-                continue
-            ep_title = safe_filename(ep.get("title", f"EP{i+1}"))
-            print(f"\n[{i+1}/{len(episodes)}] {ep_title}")
-            download_single(bv, output_dir, quality, stop_event=stop_event, progress_callback=progress_callback)
+                                             progress_callback=progress_callback,
+                                             part_prefix=prefix)
+            else:
+                episode = {
+                    "ep_id": ep.get("id") or ep.get("ep_id"),
+                    "aid": ep.get("aid"),
+                    "cid": ep.get("cid"),
+                    "title": ep_title,
+                }
+                if not all((episode["ep_id"], episode["aid"], episode["cid"])):
+                    # 数据缺 id 时回退到 bvid/aid 走普通视频接口
+                    bv = ep.get("bvid", "")
+                    aid = ep.get("aid") or episode["ep_id"]
+                    if not bv and aid:
+                        try:
+                            bv = get_video_info_by_aid(aid).get("bvid", "")
+                        except Exception:
+                            bv = ""
+                    if not bv:
+                        print("  ⚠ 该集缺少播放信息，跳过")
+                        continue
+                    download_single(bv, output_dir, quality,
+                                    stop_event=stop_event,
+                                    progress_callback=progress_callback)
+                    continue
+                ok = download_bangumi_episode(season_title, episode, output_dir,
+                                              quality,
+                                              stop_event=stop_event,
+                                              progress_callback=progress_callback,
+                                              part_prefix=prefix)
+            if not ok and not (stop_event and stop_event.is_set()):
+                raise Exception(f"{type_name}下载未完成")
         return
 
     # 处理单个视频 (可能是多P)
@@ -861,7 +961,8 @@ def download_batch(url_or_bvid: str, output_dir: Path, quality: str = "1080P",
 # ─── URL 解析 ────────────────────────────────────────────────────────────
 
 def extract_bvid(text: str) -> Optional[str]:
-    m = re.search(r'BV[a-zA-Z0-9]{9,12}', text)
+    # 标准 BV 号为 "BV" + 10 位；(?![0-9A-Za-z]) 防止匹配到更长的字符串片段
+    m = re.search(r'BV[0-9A-Za-z]{10}(?![0-9A-Za-z])', text)
     return m.group(0) if m else None
 
 
@@ -1187,7 +1288,7 @@ def main():
     parser.add_argument("url", nargs="?", help="B站视频链接 或 BV号")
     parser.add_argument("-o", "--output", default="./downloads", help="输出目录 (默认: ./downloads)")
     parser.add_argument("-q", "--quality", default="1080P",
-                        choices=list(QUALITY_MAP.keys()) + ["1080P"],
+                        choices=list(QUALITY_MAP.keys()),
                         help="画质选择 (默认: 1080P)")
     parser.add_argument("-p", "--page", type=int, default=0, help="指定分P序号")
     parser.add_argument("--cover", action="store_true", help="同时下载封面")
@@ -1212,9 +1313,10 @@ def main():
 
     # 设置登录凭证
     if args.sessdata:
+        # 显式指定 SESSDATA 即整体替换凭证，避免旧完整 Cookie 抢占优先级
         cfg = {"sessdata": args.sessdata}
-        Path("config.json").write_text(json.dumps(cfg, ensure_ascii=False, indent=2))
-        print("SESSDATA 已保存到 config.json")
+        _config_path().write_text(json.dumps(cfg, ensure_ascii=False, indent=2))
+        print("SESSDATA 已保存到 config.json (已替换原有凭证)")
     if args.cookie:
         save_cookie_string(args.cookie)
         print("完整 Cookie 已保存到 config.json")
@@ -1226,9 +1328,6 @@ def main():
     output_dir = Path(args.output)
 
     bvid = extract_bvid(args.url)
-    if bvid and bvid not in args.url:
-        # 如果只给了 BV 号
-        pass
 
     # 下载视频
     if args.page > 0 and bvid:

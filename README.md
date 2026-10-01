@@ -58,8 +58,11 @@ python bili_downloader.py BV1xx411c7mD
 # 指定画质
 python bili_downloader.py "https://www.bilibili.com/video/BV1xx411c7mD" -q 4K
 
-# 下载番剧单集
+# 下载番剧单集（ep 链接只下载该集）
 python bili_downloader.py "https://www.bilibili.com/bangumi/play/ep12345"
+
+# 下载番剧整季（ss 链接下载全部集数，文件名自动加集号前缀）
+python bili_downloader.py "https://www.bilibili.com/bangumi/play/ss12345"
 
 # 下载指定分P + 封面 + 弹幕 + 字幕
 python bili_downloader.py BV1xx411c7mD -p 1 --cover --danmaku --subtitle

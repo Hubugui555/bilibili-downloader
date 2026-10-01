@@ -206,7 +206,7 @@ def test_download_selected_order():
 
     def mock_download_course_episode(course, episode, output_dir, quality="1080P",
                                       stop_event=None, progress_callback=None,
-                                      part_prefix=""):
+                                      part_prefix="", quiet=False):
         download_order.append(episode.get("id"))
         return True
 
@@ -240,7 +240,8 @@ def test_download_selected_failure_continues():
 
     call_count = [0]
     def mock_download(course, episode, output_dir, quality="1080P",
-                      stop_event=None, progress_callback=None, part_prefix=""):
+                      stop_event=None, progress_callback=None, part_prefix="",
+                      quiet=False):
         call_count[0] += 1
         if episode.get("id") == 102:
             raise Exception("模拟下载失败")
@@ -278,7 +279,8 @@ def test_download_selected_stop_event():
     stop.set()  # Pre-set stop
 
     def mock_download(course, episode, output_dir, quality="1080P",
-                      stop_event=None, progress_callback=None, part_prefix=""):
+                      stop_event=None, progress_callback=None, part_prefix="",
+                      quiet=False):
         return True
 
     with patch("bili_downloader.download_course_episode", side_effect=mock_download):
@@ -307,7 +309,8 @@ def test_download_selected_bangumi():
     }
 
     def mock_download_bangumi(title, ep, output_dir, quality="1080P",
-                               stop_event=None, progress_callback=None, part_prefix=""):
+                               stop_event=None, progress_callback=None, part_prefix="",
+                               quiet=False):
         return True
 
     with patch("bili_downloader.download_bangumi_episode", side_effect=mock_download_bangumi):
@@ -341,12 +344,104 @@ def test_existing_functions_exist():
     assert callable(bd.build_headers)
     assert callable(bd.save_cookie_string)
 
-def test_cookie_config_structure():
-    """Verify config.json structure is preserved."""
-    cfg_path = Path("config.json")
-    if cfg_path.exists():
-        data = json.loads(cfg_path.read_text(encoding="utf-8"))
-        assert "sessdata" in data or "cookie" in data
+
+def test_cookie_config_roundtrip():
+    """Cookie 读写往返 + 旧版仅 sessdata 配置的兼容（不触碰真实凭证文件）。"""
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        cfg_path = Path(td) / "config.json"
+        with patch("bili_downloader._config_path", return_value=cfg_path):
+            bd.save_cookie_string("SESSDATA=abc123; bili_jct=xyz; DedeUserID=42")
+            cookie = bd.get_cookie_string()
+            assert "SESSDATA=abc123" in cookie
+            assert "bili_jct=xyz" in cookie
+            assert bd.get_sessdata() == "abc123"
+
+            # 旧版仅保存 sessdata 的配置
+            cfg_path.write_text(json.dumps({"sessdata": "legacy"}), encoding="utf-8")
+            assert bd.get_cookie_string() == "SESSDATA=legacy"
+            assert bd.get_sessdata() == "legacy"
+
+            # 无配置文件时返回空
+            cfg_path.unlink()
+            assert bd.get_cookie_string() == ""
+            assert bd.get_sessdata() == ""
+
+
+# ─── Test select_best_quality ───────────────────────────────────────────
+
+def _dash_playurl(video_ids, audio_ids, flac_audio=None, dolby_audio=None):
+    dash = {
+        "video": [{"id": q} for q in video_ids],
+        "audio": [{"id": a} for a in audio_ids],
+    }
+    if flac_audio:
+        dash["flac"] = {"audio": [{"id": a} for a in flac_audio]}
+    if dolby_audio:
+        dash["dolby"] = {"audio": [{"id": a} for a in dolby_audio]}
+    return {"dash": dash}
+
+
+def test_select_quality_respects_target():
+    playurl = _dash_playurl([127, 120, 116, 80, 64, 32], [30280])
+    vid, _ = bd.select_best_quality(playurl, target_qn=80)
+    assert vid["id"] == 80
+    vid, _ = bd.select_best_quality(playurl, target_qn=120)
+    assert vid["id"] == 120
+    # 目标画质不在流列表中时取不超过目标的最高流
+    vid, _ = bd.select_best_quality(playurl, target_qn=100)
+    assert vid["id"] == 80
+    # 不指定目标时取最高
+    vid, _ = bd.select_best_quality(playurl)
+    assert vid["id"] == 127
+
+def test_select_quality_audio_rank():
+    # Hi-Res(30251) 优先于 192K(30280)，尽管 id 数值更小
+    playurl = _dash_playurl([80], [30216, 30280, 30251])
+    _, aud = bd.select_best_quality(playurl)
+    assert aud["id"] == 30251
+    playurl = _dash_playurl([80], [30216, 30280])
+    _, aud = bd.select_best_quality(playurl)
+    assert aud["id"] == 30280
+
+def test_select_quality_audio_flac_dolby_pools():
+    # Hi-Res/杜比挂在 dash.flac / dash.dolby 下，不在 dash.audio 里
+    playurl = _dash_playurl([80], [30280], flac_audio=[30251])
+    _, aud = bd.select_best_quality(playurl)
+    assert aud["id"] == 30251
+    playurl = _dash_playurl([80], [30280], dolby_audio=[30250])
+    _, aud = bd.select_best_quality(playurl)
+    assert aud["id"] == 30250
+    playurl = _dash_playurl([80], [30280], flac_audio=[30251], dolby_audio=[30250])
+    _, aud = bd.select_best_quality(playurl)
+    assert aud["id"] == 30251
+
+
+# ─── Test get_season_info URL 参数 ──────────────────────────────────────
+
+def test_get_season_info_params():
+    resp = MagicMock()
+    resp.json.return_value = {"code": 0, "data": {"title": "S", "episodes": []}}
+    with patch("bili_downloader.requests.get", return_value=resp) as mget:
+        bd.get_season_info(ep_id=666)
+        assert mget.call_args.kwargs["params"] == {"ep_id": 666}
+        bd.get_season_info(season_id=555)
+        assert mget.call_args.kwargs["params"] == {"season_id": 555}
+    try:
+        bd.get_season_info()
+        assert False, "Should raise without ep_id/season_id"
+    except Exception as e:
+        assert "ep_id" in str(e) or "season_id" in str(e)
+
+
+# ─── Test extract_bvid 严格性 ───────────────────────────────────────────
+
+def test_extract_bvid_strict():
+    assert bd.extract_bvid("https://www.bilibili.com/video/BV1xx411c7mD?p=1") == "BV1xx411c7mD"
+    assert bd.extract_bvid("BV1AbCdEfGhI") == "BV1AbCdEfGhI"
+    # 10 位之后还有字母数字 → 不是 BV 号
+    assert bd.extract_bvid("BV1234567890extra") is None
+    assert bd.extract_bvid("随便说点什么") is None
 
 
 # ─── Test pagination logic (pure logic, no Tk) ─────────────────────────
@@ -443,7 +538,12 @@ def run_tests():
         test_download_selected_stop_event,
         test_download_selected_bangumi,
         test_existing_functions_exist,
-        test_cookie_config_structure,
+        test_cookie_config_roundtrip,
+        test_select_quality_respects_target,
+        test_select_quality_audio_rank,
+        test_select_quality_audio_flac_dolby_pools,
+        test_get_season_info_params,
+        test_extract_bvid_strict,
         test_pagination_default_page_for_current_ep,
         test_pagination_total_pages,
         test_pagination_range_select_ids,
@@ -475,7 +575,8 @@ def run_tests():
         coll = _make_collection(4)
         call_order = []
         def mock_dl(course, episode, output_dir, quality="1080P",
-                    stop_event=None, progress_callback=None, part_prefix=""):
+                    stop_event=None, progress_callback=None, part_prefix="",
+                    quiet=False):
             call_order.append(episode.get("id"))
             time.sleep(0.01)
             return True
@@ -492,7 +593,8 @@ def run_tests():
         active = {"count": 0, "max": 0}
         lock = threading.Lock()
         def mock_dl(course, episode, output_dir, quality="1080P",
-                    stop_event=None, progress_callback=None, part_prefix=""):
+                    stop_event=None, progress_callback=None, part_prefix="",
+                    quiet=False):
             with lock:
                 active["count"] += 1
                 active["max"] = max(active["max"], active["count"])
@@ -511,7 +613,8 @@ def run_tests():
         import time
         coll = _make_collection(4)
         def mock_dl(course, episode, output_dir, quality="1080P",
-                    stop_event=None, progress_callback=None, part_prefix=""):
+                    stop_event=None, progress_callback=None, part_prefix="",
+                    quiet=False):
             if episode.get("id") == 102:
                 raise Exception("模拟失败")
             time.sleep(0.01)
@@ -531,7 +634,8 @@ def run_tests():
         lock = threading.Lock()
         stop = threading.Event()
         def mock_dl(course, episode, output_dir, quality="1080P",
-                    stop_event=None, progress_callback=None, part_prefix=""):
+                    stop_event=None, progress_callback=None, part_prefix="",
+                    quiet=False):
             with lock:
                 started_ids.append(episode.get("id"))
             if episode.get("id") == 101:
@@ -550,7 +654,8 @@ def run_tests():
         """max_workers should be clamped to 1-4."""
         coll = _make_collection(2)
         def mock_dl(course, episode, output_dir, quality="1080P",
-                    stop_event=None, progress_callback=None, part_prefix=""):
+                    stop_event=None, progress_callback=None, part_prefix="",
+                    quiet=False):
             return True
         with patch("bili_downloader.download_course_episode", side_effect=mock_dl):
             r1 = bd.download_selected_episodes(coll, [101], Path("/tmp"), max_workers=0)
@@ -564,7 +669,8 @@ def run_tests():
         coll = _make_collection(3)
         events = []
         def mock_dl(course, episode, output_dir, quality="1080P",
-                    stop_event=None, progress_callback=None, part_prefix=""):
+                    stop_event=None, progress_callback=None, part_prefix="",
+                    quiet=False):
             time.sleep(0.01)
             return True
         def cb(event):
@@ -588,7 +694,8 @@ def run_tests():
         """Summary should include max_workers and cancelled_count."""
         coll = _make_collection(2)
         def mock_dl(course, episode, output_dir, quality="1080P",
-                    stop_event=None, progress_callback=None, part_prefix=""):
+                    stop_event=None, progress_callback=None, part_prefix="",
+                    quiet=False):
             return True
         with patch("bili_downloader.download_course_episode", side_effect=mock_dl):
             result = bd.download_selected_episodes(
