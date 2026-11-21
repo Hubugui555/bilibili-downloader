@@ -1,6 +1,10 @@
 # Credentials and local user data
 config.json
 **/config.json
+cloudreve_config.json
+web_config.json
+bilidown_data/
+work/
 .env
 .env.*
 
@@ -28,3 +32,6 @@ benchmark_results.*
 .vscode/
 .DS_Store
 Thumbs.db
+
+# Local admin API token
+admin_token

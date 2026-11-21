@@ -1,0 +1,628 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BiliDown Studio</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0%25' stop-color='%23fb7299'/%3E%3Cstop offset='100%25' stop-color='%2300aeec'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='64' height='64' rx='16' fill='url(%23g)'/%3E%3Cpath d='M21 15l7 7M43 15l-7 7' stroke='%23fff' stroke-width='4' stroke-linecap='round'/%3E%3Crect x='14' y='22' width='36' height='27' rx='7' fill='none' stroke='%23fff' stroke-width='4'/%3E%3Cpath d='M32 29v12m0 0l-5-5m5 5l5-5' stroke='%23fff' stroke-width='3.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="static/css/studio.css?v={{ version }}">
+</head>
+<body>
+  <div class="ambient-bg" aria-hidden="true">
+    <div class="orb orb-pink"></div>
+    <div class="orb orb-cyan"></div>
+  </div>
+
+  <div class="app-shell">
+    <!-- ── Left Navigation Rail ── -->
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 64 64" width="24" height="24" fill="none">
+            <path d="M20 14l8 8M44 14l-8 8" stroke="currentColor" stroke-width="4.5" stroke-linecap="round"/>
+            <rect x="12" y="22" width="40" height="28" rx="8" stroke="currentColor" stroke-width="4.5"/>
+            <path d="M32 29v13m0 0l-5.5-5.5M32 42l5.5-5.5" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </div>
+        <div class="brand-text">
+          <div class="brand-name">BiliDown <span class="studio-pill">Studio</span></div>
+          <div class="brand-sub" id="mode-subtitle">Bilibili 媒体工作台</div>
+        </div>
+      </div>
+
+      <nav class="nav-menu" aria-label="主导航">
+        <button class="nav-item active" data-tab="workspace" title="解析下载" aria-label="解析下载">
+          <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/><path d="M11 8v6M8 11h6"/>
+          </svg>
+          <span>解析下载</span>
+        </button>
+
+        <button class="nav-item" data-tab="queue" title="任务队列" aria-label="任务队列">
+          <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 3v12m0 0l-4-4m4 4l4-4"/><path d="M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2"/>
+          </svg>
+          <span>任务队列</span>
+          <span class="nav-badge hidden" id="nav-queue-badge">0</span>
+        </button>
+
+        <button class="nav-item" data-tab="account" title="我的 B 站" aria-label="我的 B 站">
+          <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
+          </svg>
+          <span>我的 B 站</span>
+        </button>
+
+        <button class="nav-item" data-tab="history" title="下载历史" aria-label="下载历史">
+          <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14"/>
+          </svg>
+          <span>下载历史</span>
+          <span class="nav-count" id="nav-history-count"></span>
+        </button>
+
+        <button class="nav-item" data-tab="settings" title="偏好设置" aria-label="偏好设置">
+          <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 01-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9c.26.6.85 1 1.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/>
+          </svg>
+          <span>偏好设置</span>
+        </button>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="sys-card">
+          <div class="sys-row">
+            <span class="sys-label">运行模式</span>
+            <span class="sys-pill" id="sys-mode-pill">检测中</span>
+          </div>
+          <div class="sys-row">
+            <span class="sys-label">FFmpeg</span>
+            <span class="sys-dot" id="sys-ffmpeg-dot">检测中</span>
+          </div>
+          <div class="sys-disk">
+            <div class="sys-row">
+              <span class="sys-label">磁盘可用</span>
+              <span class="sys-val" id="sys-disk-text">-- GB</span>
+            </div>
+            <div class="mini-bar"><i id="sys-disk-bar" style="width:0%"></i></div>
+          </div>
+        </div>
+        <div class="version-line">v{{ version }}</div>
+      </div>
+    </aside>
+
+    <!-- ── Main Content Column ── -->
+    <div class="main-col">
+      <header class="topbar">
+        <div class="topbar-title">
+          <h1 id="page-title">解析下载</h1>
+          <span class="topbar-hint" id="page-subtitle">支持 BV/av 视频、b23.tv 短链、番剧/课程 ep &amp; ss、UP 合集与收藏夹</span>
+        </div>
+        <div class="topbar-actions">
+          <button class="icon-btn" id="theme-toggle" title="切换深浅主题" aria-label="切换深浅主题">
+            <svg id="theme-icon-sun" class="hidden" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+              <circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.93 4.93l1.41 1.41m11.32 11.32l1.41 1.41M2 12h2m16 0h2M4.93 19.07l1.41-1.41m11.32-11.32l1.41-1.41"/>
+            </svg>
+            <svg id="theme-icon-moon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+              <path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/>
+            </svg>
+          </button>
+
+          <button class="account-pill" id="account-btn">
+            <span class="avatar-wrap" id="user-avatar">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="8" r="4"/><path d="M5 20a7 7 0 0114 0"/>
+              </svg>
+            </span>
+            <span class="account-meta">
+              <span class="account-name" id="user-name">未登录</span>
+              <span class="account-sub" id="user-sub">扫码解锁高清与 AI 字幕</span>
+            </span>
+          </button>
+        </div>
+      </header>
+
+      <main class="content-scroll">
+        <!-- ══════════ TAB 1: WORKSPACE ══════════ -->
+        <section class="tab-view active" id="view-workspace">
+          <!-- Hero Input Card -->
+          <div class="card hero-card">
+            <div class="hero-input-row" id="single-input-wrap">
+              <div class="input-shell">
+                <svg class="input-prefix-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+                  <path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/>
+                  <path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/>
+                </svg>
+                <input type="text" id="url-input" autocomplete="off"
+                       placeholder="粘贴 B 站链接、BV 号、b23.tv 分享文案、番剧/课程/合集/收藏夹链接...">
+                <button class="clear-x hidden" id="url-clear" title="清空">×</button>
+              </div>
+              <button class="btn ghost" id="paste-btn" title="从剪贴板粘贴并解析">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="8" y="4" width="8" height="4" rx="1"/><path d="M16 6h2a2 2 0 012 2v12a2 2 0 01-2 2H6a2 2 0 01-2-2V8a2 2 0 012-2h2"/></svg>
+                <span>粘贴</span>
+              </button>
+              <button class="btn primary" id="inspect-btn">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35"/></svg>
+                <span>解析链接</span>
+              </button>
+            </div>
+
+            <!-- Batch Multi-line Mode -->
+            <div class="batch-input-wrap hidden" id="batch-input-wrap">
+              <textarea id="batch-textarea" rows="4" placeholder="每行粘贴一个 B 站视频链接、BV 号或 b23.tv 短链，点击下方按钮一键批量加入下载队列..."></textarea>
+              <div class="batch-bar">
+                <span class="muted" id="batch-count-hint">已识别 0 条链接</span>
+                <div class="btn-group">
+                  <button class="btn ghost sm" id="batch-cancel-btn">返回单链解析</button>
+                  <button class="btn primary sm" id="batch-enqueue-btn">全部加入下载队列</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="quick-strip">
+              <div class="quick-tags">
+                <span class="chip-info">支持：视频 / 多P</span>
+                <span class="chip-info">番剧 ep / ss</span>
+                <span class="chip-info">课程 cheese</span>
+                <span class="chip-info">UP 合集</span>
+                <span class="chip-info">收藏夹</span>
+                <span class="chip-info">b23.tv 短链</span>
+              </div>
+              <div class="quick-actions">
+                <button class="link-btn" id="toggle-batch-btn">批量多链粘贴</button>
+                <span class="sep">·</span>
+                <button class="link-btn" id="quick-watchlater-btn">载入稍后再看</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Inspected Media Preview Card -->
+          <div class="card media-card hidden" id="media-card">
+            <div class="media-hero">
+              <div class="thumb-frame">
+                <img id="media-cover" alt="封面">
+                <span class="type-pill" id="media-type-pill">视频</span>
+                <span class="dur-pill hidden" id="media-dur-pill">00:00</span>
+              </div>
+              <div class="media-details">
+                <h2 class="media-title" id="media-title"></h2>
+                <div class="media-meta-row" id="media-meta"></div>
+                <p class="media-desc hidden" id="media-desc"></p>
+                <div class="stream-badges" id="stream-badges"></div>
+              </div>
+            </div>
+
+            <!-- Inline Episode / Multi-P / Playlist Picker -->
+            <div class="picker-section hidden" id="picker-section">
+              <div class="picker-head">
+                <div class="picker-title-row">
+                  <span class="picker-label" id="picker-label">分集选择</span>
+                  <span class="picker-counter" id="picker-counter">已选 0 / 0</span>
+                </div>
+                <div class="picker-tools">
+                  <div class="mini-search">
+                    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg>
+                    <input type="text" id="picker-search" placeholder="筛选标题或序号...">
+                  </div>
+                  <div class="range-group">
+                    <input type="text" id="picker-range" placeholder="范围如 1-10,15">
+                    <button class="btn ghost xs" id="picker-range-apply">应用</button>
+                  </div>
+                  <div class="btn-group">
+                    <button class="btn ghost xs" data-pick="all">全选</button>
+                    <button class="btn ghost xs" data-pick="invert">反选</button>
+                    <button class="btn ghost xs" data-pick="none">清空</button>
+                    <button class="btn ghost xs hidden" id="pick-current-btn" data-pick="current">仅当前</button>
+                  </div>
+                  <div class="segmented xs" id="picker-view-toggle">
+                    <button class="seg-btn active" data-view="list" title="列表视图">列表</button>
+                    <button class="seg-btn" data-view="grid" title="紧凑网格">网格</button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="picker-body" id="picker-list"></div>
+
+              <div class="picker-foot hidden" id="picker-pager">
+                <span class="muted" id="picker-page-info">第 1 / 1 页</span>
+                <div class="btn-group">
+                  <button class="btn ghost xs" id="picker-prev">上一页</button>
+                  <button class="btn ghost xs" id="picker-next">下一页</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Download Options & Action Card -->
+          <div class="card options-card">
+            <div class="options-top">
+              <div class="segmented" id="mode-segmented">
+                <button class="seg-btn active" data-mode="video">
+                  <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="2" y="5" width="15" height="14" rx="2"/><polygon points="17 9 22 6 22 18 17 15"/></svg>
+                  视频 + 音频
+                </button>
+                <button class="seg-btn" data-mode="audio">
+                  <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+                  仅提取音频
+                </button>
+                <button class="seg-btn" data-mode="extras">
+                  <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
+                  仅弹幕 / 字幕 / 封面
+                </button>
+              </div>
+            </div>
+
+            <!-- Video Mode Controls -->
+            <div class="opt-grid" id="opt-video-row">
+              <div class="field">
+                <label for="opt-quality">目标画质</label>
+                <select id="opt-quality">
+                  <option value="8K">8K 超高清</option>
+                  <option value="杜比视界">杜比视界</option>
+                  <option value="HDR">HDR 真彩</option>
+                  <option value="4K">4K 超清</option>
+                  <option value="1080P60">1080P 60帧</option>
+                  <option value="1080P+">1080P 高码率</option>
+                  <option value="1080P" selected>1080P 高清</option>
+                  <option value="720P60">720P 60帧</option>
+                  <option value="720P">720P 标清</option>
+                  <option value="480P">480P 清晰</option>
+                  <option value="360P">360P 流畅</option>
+                  <option value="240P">240P 极速</option>
+                </select>
+              </div>
+
+              <div class="field">
+                <label for="opt-codec">视频编码偏好</label>
+                <select id="opt-codec">
+                  <option value="auto">自动最佳 (推荐)</option>
+                  <option value="hevc">H.265 / HEVC (体积小)</option>
+                  <option value="avc">H.264 / AVC (兼容性最强)</option>
+                  <option value="av1">AV1 (极致压缩)</option>
+                </select>
+              </div>
+
+              <div class="field">
+                <label for="opt-workers">多集并发数</label>
+                <div class="stepper">
+                  <button type="button" class="step-btn" id="workers-dec">−</button>
+                  <input type="number" id="opt-workers" value="2" min="1" max="32">
+                  <button type="button" class="step-btn" id="workers-inc">+</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Audio Mode Controls -->
+            <div class="opt-grid hidden" id="opt-audio-row">
+              <div class="field">
+                <label for="opt-audio-fmt">音频输出格式</label>
+                <select id="opt-audio-fmt">
+                  <option value="m4a">M4A (无损原流直出 · 极快)</option>
+                  <option value="mp3">MP3 (320kbps · 通用兼容)</option>
+                  <option value="flac">FLAC (无损封装)</option>
+                </select>
+              </div>
+              <div class="field">
+                <label>自动写入信息</label>
+                <div class="static-hint">自动嵌入封面图、标题与 UP 主 ID3 元数据</div>
+              </div>
+            </div>
+
+            <!-- Extras Chips -->
+            <div class="toggle-strip" id="opt-extras-strip">
+              <label class="pill-check"><input type="checkbox" id="opt-cover" checked><span>下载封面</span></label>
+              <label class="pill-check" id="pill-danmaku"><input type="checkbox" id="opt-danmaku" checked><span>下载弹幕</span></label>
+              <label class="pill-check" id="pill-subtitle"><input type="checkbox" id="opt-subtitle" checked><span>下载字幕 (含 AI)</span></label>
+              <label class="pill-check" id="pill-embed"><input type="checkbox" id="opt-embed" checked><span>软封装进视频 (含弹幕输出 MKV)</span></label>
+            </div>
+
+            <!-- Destination Row -->
+            <div class="dest-row">
+              <div class="field grow" id="local-dir-field">
+                <label for="opt-output-dir">本地保存目录</label>
+                <div class="inline-field">
+                  <input type="text" id="opt-output-dir" placeholder="本地下载保存路径">
+                  <button class="btn ghost sm" id="pick-folder-btn">选择目录</button>
+                  <button class="btn ghost sm" id="open-output-dir-btn" title="在资源管理器中打开">打开</button>
+                </div>
+              </div>
+
+              <div class="field grow hidden" id="cloudreve-dir-field">
+                <label for="opt-remote-dir">Cloudreve 网盘目标目录</label>
+                <div class="inline-field">
+                  <input type="text" id="opt-remote-dir" placeholder="/视频/B站">
+                  <label class="pill-check compact"><input type="checkbox" id="opt-keep-local"><span>保留服务器缓存</span></label>
+                </div>
+              </div>
+
+              <div class="cloud-switch-wrap hidden" id="cloud-switch-wrap">
+                <label class="pill-check"><input type="checkbox" id="opt-upload-cloud"><span>完成后上传至 Cloudreve</span></label>
+              </div>
+            </div>
+
+            <!-- Submit Bar -->
+            <div class="submit-bar">
+              <div class="submit-summary" id="submit-summary">准备就绪 — 可直接粘贴链接或先解析预览</div>
+              <button class="btn primary lg" id="enqueue-btn">
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"><path d="M12 3v12m0 0l-4-4m4 4l4-4"/><path d="M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2"/></svg>
+                <span id="enqueue-btn-text">加入下载队列</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Compact Active Task Banner inside Workspace -->
+          <div class="card mini-active hidden" id="workspace-active-card">
+            <div class="mini-active-row">
+              <div class="mini-active-info">
+                <span class="pulse-dot"></span>
+                <strong id="wa-title">下载中...</strong>
+                <span class="muted" id="wa-meta"></span>
+              </div>
+              <button class="btn ghost xs" id="wa-goto-queue">查看队列详情 →</button>
+            </div>
+            <div class="progress-track"><i id="wa-bar" style="width:0%"></i></div>
+          </div>
+        </section>
+
+        <!-- ══════════ TAB 2: QUEUE ══════════ -->
+        <section class="tab-view" id="view-queue">
+          <div class="section-toolbar">
+            <div class="toolbar-stats" id="queue-stats">当前无任务</div>
+            <div class="btn-group">
+              <button class="btn ghost sm" id="queue-clear-done">清理已结束任务</button>
+            </div>
+          </div>
+          <div id="queue-list" class="task-stack"></div>
+          <div class="empty-state" id="queue-empty">
+            <div class="empty-icon">
+              <svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 3v12m0 0l-4-4m4 4l4-4"/><path d="M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2"/></svg>
+            </div>
+            <h3>下载队列空闲</h3>
+            <p>去「解析下载」添加视频、番剧、课程或收藏夹，支持多任务排队与断点续传。</p>
+            <button class="btn primary sm" data-jump="workspace">前往解析下载</button>
+          </div>
+        </section>
+
+        <!-- ══════════ TAB 3: MY BILIBILI (Watch Later & Favorites) ══════════ -->
+        <section class="tab-view" id="view-account">
+          <div class="account-locked card hidden" id="acc-need-login">
+            <h3>登录 B 站解锁个人片库</h3>
+            <p class="muted">登录后可直接浏览并批量下载你的「稍后再看」与「我的收藏夹」，无需逐个复制链接。</p>
+            <button class="btn primary" id="acc-open-login">立即扫码登录</button>
+          </div>
+
+          <div id="acc-panel">
+            <div class="section-toolbar">
+              <div class="segmented" id="acc-subtabs">
+                <button class="seg-btn active" data-sub="watchlater">稍后再看</button>
+                <button class="seg-btn" data-sub="favorites">我的收藏夹</button>
+              </div>
+              <div class="btn-group">
+                <div class="mini-search">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg>
+                  <input type="text" id="acc-search" placeholder="搜索视频或 UP 主...">
+                </div>
+                <button class="btn ghost sm" id="acc-refresh">刷新</button>
+              </div>
+            </div>
+
+            <div class="folder-pills hidden" id="fav-folder-bar"></div>
+
+            <div class="acc-selection-bar hidden" id="acc-selection-bar">
+              <span id="acc-sel-count">已选 0 个视频</span>
+              <div class="btn-group">
+                <button class="btn ghost xs" id="acc-sel-all">全选当前</button>
+                <button class="btn ghost xs" id="acc-sel-none">清空</button>
+                <button class="btn primary sm" id="acc-download-sel">批量加入下载队列</button>
+              </div>
+            </div>
+
+            <div class="media-grid" id="acc-grid"></div>
+            <div class="empty-state hidden" id="acc-empty">
+              <h3>暂无内容</h3>
+              <p id="acc-empty-msg">列表为空或尚未加载。</p>
+            </div>
+          </div>
+        </section>
+
+        <!-- ══════════ TAB 4: HISTORY ══════════ -->
+        <section class="tab-view" id="view-history">
+          <div class="stats-row" id="history-stats-row">
+            <div class="stat-card">
+              <div class="stat-label">累计任务</div>
+              <div class="stat-val" id="hstat-total">0</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">成功完成</div>
+              <div class="stat-val accent-green" id="hstat-done">0</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">累计保存体积</div>
+              <div class="stat-val accent-cyan" id="hstat-bytes">0 MB</div>
+            </div>
+          </div>
+
+          <div class="section-toolbar">
+            <div class="mini-search wide">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg>
+              <input type="text" id="history-search" placeholder="搜索历史下载标题、BV 号...">
+            </div>
+            <button class="btn ghost sm danger-text" id="history-clear-btn">清空历史记录</button>
+          </div>
+
+          <div id="history-list" class="history-stack"></div>
+          <div class="empty-state hidden" id="history-empty">
+            <h3>暂无下载历史</h3>
+            <p>完成的任务会自动归档在此，方便随时打开目录或再次下载。</p>
+          </div>
+        </section>
+
+        <!-- ══════════ TAB 5: SETTINGS ══════════ -->
+        <section class="tab-view" id="view-settings">
+          <div class="settings-grid">
+            <!-- General Download Defaults -->
+            <div class="card">
+              <h3 class="card-h3">下载与命名偏好</h3>
+              <div class="field">
+                <label for="set-output-dir">默认保存目录</label>
+                <div class="inline-field">
+                  <input type="text" id="set-output-dir">
+                  <button class="btn ghost sm" id="set-pick-folder">选择目录</button>
+                </div>
+              </div>
+              <div class="opt-grid two">
+                <div class="field">
+                  <label for="set-quality">默认画质</label>
+                  <select id="set-quality">
+                    <option value="8K">8K</option><option value="杜比视界">杜比视界</option>
+                    <option value="HDR">HDR</option><option value="4K">4K</option>
+                    <option value="1080P60">1080P60</option><option value="1080P+">1080P+</option>
+                    <option value="1080P">1080P</option><option value="720P60">720P60</option>
+                    <option value="720P">720P</option><option value="480P">480P</option>
+                    <option value="360P">360P</option><option value="240P">240P</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label for="set-codec">默认视频编码</label>
+                  <select id="set-codec">
+                    <option value="auto">自动最佳</option>
+                    <option value="hevc">H.265 / HEVC</option>
+                    <option value="avc">H.264 / AVC</option>
+                    <option value="av1">AV1</option>
+                  </select>
+                </div>
+              </div>
+              <div class="opt-grid two">
+                <div class="field">
+                  <label for="set-workers">默认并发数</label>
+                  <input type="number" id="set-workers" min="1" max="32" value="2">
+                </div>
+                <div class="field">
+                  <label for="set-subtitle-mode">字幕语言策略</label>
+                  <select id="set-subtitle-mode">
+                    <option value="best_zh">优先中文单轨 (人工 &gt; AI)</option>
+                    <option value="all">下载全部可用语言</option>
+                  </select>
+                </div>
+              </div>
+              <div class="field">
+                <label for="set-template">文件名模板 <span class="muted">支持 {title} {index} {owner} {bvid} {quality}</span></label>
+                <input type="text" id="set-template" placeholder="{title}">
+                <div class="field-hint">预览：<code id="set-template-preview">示例视频.mp4</code></div>
+              </div>
+              <label class="pill-check"><input type="checkbox" id="set-cdn-probe"><span>下载前自动测速选择最快 CDN 线路</span></label>
+            </div>
+
+            <!-- Danmaku Aesthetic Studio -->
+            <div class="card">
+              <h3 class="card-h3">弹幕渲染美学 (ASS)</h3>
+              <div class="dm-preview-stage" id="dm-preview-stage">
+                <div class="dm-area-box" id="dm-area-box">
+                  <span class="dm-sample" style="top:12%;left:8%;color:#ffffff">前方高能名场面！！</span>
+                  <span class="dm-sample" style="top:38%;left:36%;color:#fb7299">233333 太丝滑了</span>
+                  <span class="dm-sample" style="top:66%;left:16%;color:#00aeec">这一段建议反复观看</span>
+                </div>
+                <div class="dm-sub-sample">字幕预览区：底部始终预留安全空间避免遮挡</div>
+              </div>
+
+              <div class="slider-row">
+                <label>显示区域 <strong id="val-dm-area">55%</strong></label>
+                <input type="range" id="set-dm-area" min="0.3" max="0.9" step="0.05" value="0.55">
+              </div>
+              <div class="slider-row">
+                <label>不透明度 <strong id="val-dm-opacity">85%</strong></label>
+                <input type="range" id="set-dm-opacity" min="0.4" max="1.0" step="0.05" value="0.85">
+              </div>
+              <div class="slider-row">
+                <label>字号缩放 <strong id="val-dm-scale">1.00x</strong></label>
+                <input type="range" id="set-dm-scale" min="0.7" max="1.4" step="0.05" value="1.0">
+              </div>
+              <div class="slider-row">
+                <label>滚动速度 <strong id="val-dm-speed">1.00x</strong></label>
+                <input type="range" id="set-dm-speed" min="0.7" max="1.4" step="0.05" value="1.0">
+              </div>
+            </div>
+
+            <!-- Cloudreve WebDAV Sync -->
+            <div class="card">
+              <h3 class="card-h3">Cloudreve 网盘自动上传 (WebDAV)</h3>
+              <label class="pill-check" style="margin-bottom:14px">
+                <input type="checkbox" id="set-cloud-enabled">
+                <span>启用 Cloudreve WebDAV 自动上传</span>
+              </label>
+              <div class="field">
+                <label for="set-cloud-url">WebDAV 服务地址</label>
+                <input type="text" id="set-cloud-url" placeholder="http://127.0.0.1:5212/dav">
+              </div>
+              <div class="opt-grid two">
+                <div class="field">
+                  <label for="set-cloud-user">账号 / 邮箱</label>
+                  <input type="text" id="set-cloud-user" placeholder="Cloudreve WebDAV 用户名">
+                </div>
+                <div class="field">
+                  <label for="set-cloud-pass">WebDAV 密码</label>
+                  <input type="password" id="set-cloud-pass" placeholder="留空表示保持原有密码">
+                </div>
+              </div>
+              <div class="field">
+                <label for="set-cloud-dir">默认网盘目录</label>
+                <input type="text" id="set-cloud-dir" placeholder="/视频/B站">
+              </div>
+              <div class="btn-group">
+                <button class="btn ghost sm" id="test-cloud-btn">测试 WebDAV 连接</button>
+                <span class="muted" id="test-cloud-status"></span>
+              </div>
+            </div>
+
+            <!-- Environment & Save -->
+            <div class="card">
+              <h3 class="card-h3">系统与环境诊断</h3>
+              <div class="diag-list" id="diag-list"></div>
+              <div style="margin-top:18px;display:flex;justify-content:flex-end;gap:10px">
+                <button class="btn primary" id="save-settings-btn">保存全部设置</button>
+              </div>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <!-- ── Login Modal ── -->
+  <div class="modal-backdrop hidden" id="login-modal" role="dialog" aria-modal="true">
+    <div class="modal-card">
+      <div class="modal-head">
+        <h2>Bilibili 账号登录</h2>
+        <button class="icon-btn" data-close="login-modal" aria-label="关闭">×</button>
+      </div>
+      <div class="login-body">
+        <div class="qr-pane">
+          <div class="qr-frame">
+            <img id="qr-img" class="hidden" alt="登录二维码">
+            <span id="qr-placeholder" class="muted" style="color:#64748b">加载中...</span>
+          </div>
+          <div class="qr-status" id="qr-status">正在获取二维码...</div>
+          <button class="btn ghost xs" id="qr-refresh-btn">刷新二维码</button>
+        </div>
+        <div class="cookie-pane">
+          <div class="logged-profile hidden" id="modal-logged-profile">
+            <div class="profile-summary" id="modal-profile-text"></div>
+            <button class="btn ghost xs danger-text" id="logout-btn">退出当前账号</button>
+          </div>
+          <label for="cookie-textarea">或粘贴浏览器完整 Cookie（已购课程鉴权推荐）</label>
+          <textarea id="cookie-textarea" rows="5" placeholder="SESSDATA=...; DedeUserID=...; bili_jct=..."></textarea>
+          <div class="cookie-actions">
+            <span class="muted" id="cookie-msg"></span>
+            <button class="btn primary sm" id="cookie-save-btn">校验并保存 Cookie</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Toast Container ── -->
+  <div class="toast-stack" id="toast-stack"></div>
+
+  <script src="static/js/studio.js?v={{ version }}"></script>
+</body>
+</html>

@@ -206,7 +206,7 @@ def test_download_selected_order():
 
     def mock_download_course_episode(course, episode, output_dir, quality="1080P",
                                       stop_event=None, progress_callback=None,
-                                      part_prefix="", quiet=False):
+                                      part_prefix="", quiet=False, defer_merge=False):
         download_order.append(episode.get("id"))
         return True
 
@@ -241,7 +241,7 @@ def test_download_selected_failure_continues():
     call_count = [0]
     def mock_download(course, episode, output_dir, quality="1080P",
                       stop_event=None, progress_callback=None, part_prefix="",
-                      quiet=False):
+                      quiet=False, defer_merge=False):
         call_count[0] += 1
         if episode.get("id") == 102:
             raise Exception("模拟下载失败")
@@ -280,7 +280,7 @@ def test_download_selected_stop_event():
 
     def mock_download(course, episode, output_dir, quality="1080P",
                       stop_event=None, progress_callback=None, part_prefix="",
-                      quiet=False):
+                      quiet=False, defer_merge=False):
         return True
 
     with patch("bili_downloader.download_course_episode", side_effect=mock_download):
@@ -310,7 +310,7 @@ def test_download_selected_bangumi():
 
     def mock_download_bangumi(title, ep, output_dir, quality="1080P",
                                stop_event=None, progress_callback=None, part_prefix="",
-                               quiet=False):
+                               quiet=False, defer_merge=False):
         return True
 
     with patch("bili_downloader.download_bangumi_episode", side_effect=mock_download_bangumi):
@@ -415,6 +415,158 @@ def test_select_quality_audio_flac_dolby_pools():
     playurl = _dash_playurl([80], [30280], flac_audio=[30251], dolby_audio=[30250])
     _, aud = bd.select_best_quality(playurl)
     assert aud["id"] == 30251
+
+
+def test_select_quality_null_flac_dolby():
+    # B站对不支持的音轨会返回 "flac": null / "dolby": null，
+    # 不能依赖 dict.get(key, {}) 的默认值
+    playurl = {"dash": {
+        "video": [{"id": 80}],
+        "audio": [{"id": 30280}],
+        "flac": None,
+        "dolby": None,
+    }}
+    vid, aud = bd.select_best_quality(playurl, target_qn=80)
+    assert vid["id"] == 80
+    assert aud["id"] == 30280
+
+
+def test_load_config_corrupt_returns_empty():
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        cfg = Path(td) / "config.json"
+        cfg.write_text("{ not valid json", encoding="utf-8")
+        with patch("bili_downloader._config_path", return_value=cfg):
+            assert bd.get_sessdata() == ""
+            assert bd.get_cookie_string() == ""
+
+
+def test_progress_monotonic_across_streams():
+    import tempfile
+    playurl = {"dash": {
+        "video": [{"id": 80, "base_url": "v"}],
+        "audio": [{"id": 30280, "base_url": "a"}],
+    }}
+    fractions = []
+
+    def fake_download(url, path, desc="", stop_event=None,
+                      progress_callback=None, quiet=False, max_retries=5):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"x")
+        total = 1000 if desc == "视频" else 200
+        for done in (total // 2, total):
+            progress_callback(done, total)
+        return True
+
+    def fake_merge(video, audio, output):
+        output.write_bytes(b"m")
+        return True
+
+    with tempfile.TemporaryDirectory() as td, \
+            patch("bili_downloader.download_stream", side_effect=fake_download), \
+            patch("bili_downloader.merge_video_audio", side_effect=fake_merge):
+        ok = bd.download_playurl_streams(
+            "t", "p", playurl, Path(td),
+            progress_callback=lambda d, t: fractions.append(d / t))
+
+    assert ok
+    # 下载音频时进度不能从 100% 跳回 0%
+    assert fractions == sorted(fractions)
+    assert fractions[0] > 0
+    assert fractions[-1] == 1.0
+
+
+# ─── Test 弹幕/字幕合并 ─────────────────────────────────────────────────
+
+def _write_temp(td, name, content):
+    path = Path(td) / name
+    path.write_text(content, encoding="utf-8")
+    return path
+
+
+def test_parse_danmaku_xml():
+    import tempfile
+    xml = (
+        '<?xml version="1.0" encoding="UTF-8"?><i>'
+        '<d p="1.50,1,25,16777215,0,0,1,1,10">滚动 &amp; 测试</d>'
+        '<d p="2.00,5,36,255,0,0,1,2,10">顶部弹幕</d>'
+        '<d p="3.00,4,25,16711680,0,0,1,3,10">底部弹幕</d>'
+        '<d p="4.00,7,25,16777215,0,0,1,4,10">{"x":1}</d>'
+        '</i>'
+    )
+    with tempfile.TemporaryDirectory() as td:
+        path = _write_temp(td, "dm.xml", xml)
+        items = bd._parse_danmaku_xml(path)
+    # 高级弹幕(mode 7)跳过
+    assert len(items) == 3
+    assert items[0][0] == 1.5
+    assert items[0][4] == "滚动 & 测试"
+    assert [item[1] for item in items] == [1, 5, 4]
+
+
+def test_parse_srt():
+    import tempfile
+    srt = (
+        "1\n00:00:01,000 --> 00:00:02,500\n第一句\n\n"
+        "2\n00:01:03,250 --> 00:01:05,000\n第二句\n换行\n"
+    )
+    with tempfile.TemporaryDirectory() as td:
+        path = _write_temp(td, "sub.srt", srt)
+        events = bd._parse_srt(path)
+    assert len(events) == 2
+    assert events[0][0] == 1.0 and events[0][1] == 2.5
+    assert events[0][2] == "第一句"
+    assert events[1][0] == 63.25
+    assert events[1][2] == "第二句\n换行"
+
+
+def test_build_combined_ass_merges_tracks():
+    import tempfile
+    xml = '<i><d p="1.00,1,25,16777215,0,0,1,1,10">弹幕内容</d></i>'
+    srt = "1\n00:00:01,000 --> 00:00:02,000\n字幕内容\n"
+    with tempfile.TemporaryDirectory() as td:
+        xml_path = _write_temp(td, "dm.xml", xml)
+        srt_path = _write_temp(td, "sub.srt", srt)
+        ass_path = bd.build_combined_ass(xml_path, [srt_path],
+                                         Path(td) / "out.ass", 1920, 1080)
+        content = ass_path.read_text(encoding="utf-8-sig")
+    assert "Style: Danmaku" in content
+    assert "Style: Subtitle" in content
+    assert content.count("Dialogue: 0,") == 1
+    assert content.count("Dialogue: 1,") == 1
+    assert "弹幕内容" in content
+    assert "字幕内容" in content
+    assert "\\move(" in content
+
+
+def test_subtitle_priority_prefers_chinese():
+    assert (bd._subtitle_priority({"lan": "zh-CN"})
+            < bd._subtitle_priority({"lan": "ai-zh"}))
+    assert (bd._subtitle_priority({"lan": "ai-zh"})
+            < bd._subtitle_priority({"lan": "zh-Hant"}))
+    assert (bd._subtitle_priority({"lan": "zh-Hant"})
+            < bd._subtitle_priority({"lan": "ai-en"}))
+
+
+def test_subtitle_only_best_track_saved():
+    import tempfile
+    subs = [
+        {"lan": "ai-en", "lan_doc": "English", "subtitle_url": "//example/ai-en"},
+        {"lan": "ai-zh", "lan_doc": "中文", "subtitle_url": "//example/ai-zh"},
+    ]
+    resp = MagicMock()
+    resp.json.return_value = {"body": [{"from": 1.0, "to": 2.0, "content": "你好"}]}
+    with tempfile.TemporaryDirectory() as td, \
+            patch("bili_downloader._fetch_subtitle_list", return_value=subs), \
+            patch("bili_downloader.requests.get", return_value=resp) as mget:
+        saved = bd.download_subtitle(aid=1, cid=2, output_dir=Path(td),
+                                     base_name="测试", quiet=True)
+        text = saved[0].read_text(encoding="utf-8") if saved else ""
+    assert len(saved) == 1
+    assert saved[0].name == "测试.srt"
+    assert "你好" in text
+    # 多语言 AI 字幕只下载优先级最高的一条，避免同屏重叠
+    assert mget.call_count == 1
 
 
 # ─── Test get_season_info URL 参数 ──────────────────────────────────────
@@ -542,6 +694,14 @@ def run_tests():
         test_select_quality_respects_target,
         test_select_quality_audio_rank,
         test_select_quality_audio_flac_dolby_pools,
+        test_select_quality_null_flac_dolby,
+        test_load_config_corrupt_returns_empty,
+        test_progress_monotonic_across_streams,
+        test_parse_danmaku_xml,
+        test_parse_srt,
+        test_build_combined_ass_merges_tracks,
+        test_subtitle_priority_prefers_chinese,
+        test_subtitle_only_best_track_saved,
         test_get_season_info_params,
         test_extract_bvid_strict,
         test_pagination_default_page_for_current_ep,
@@ -576,7 +736,7 @@ def run_tests():
         call_order = []
         def mock_dl(course, episode, output_dir, quality="1080P",
                     stop_event=None, progress_callback=None, part_prefix="",
-                    quiet=False):
+                    quiet=False, defer_merge=False):
             call_order.append(episode.get("id"))
             time.sleep(0.01)
             return True
@@ -594,7 +754,7 @@ def run_tests():
         lock = threading.Lock()
         def mock_dl(course, episode, output_dir, quality="1080P",
                     stop_event=None, progress_callback=None, part_prefix="",
-                    quiet=False):
+                    quiet=False, defer_merge=False):
             with lock:
                 active["count"] += 1
                 active["max"] = max(active["max"], active["count"])
@@ -614,7 +774,7 @@ def run_tests():
         coll = _make_collection(4)
         def mock_dl(course, episode, output_dir, quality="1080P",
                     stop_event=None, progress_callback=None, part_prefix="",
-                    quiet=False):
+                    quiet=False, defer_merge=False):
             if episode.get("id") == 102:
                 raise Exception("模拟失败")
             time.sleep(0.01)
@@ -635,7 +795,7 @@ def run_tests():
         stop = threading.Event()
         def mock_dl(course, episode, output_dir, quality="1080P",
                     stop_event=None, progress_callback=None, part_prefix="",
-                    quiet=False):
+                    quiet=False, defer_merge=False):
             with lock:
                 started_ids.append(episode.get("id"))
             if episode.get("id") == 101:
@@ -650,18 +810,18 @@ def run_tests():
         assert len(started_ids) < 6, f"Started {len(started_ids)} episodes"
         assert result["cancelled"] is True
 
-    def test_concurrent_max_workers_clamped():
-        """max_workers should be clamped to 1-4."""
+    def test_concurrent_max_workers_minimum():
+        """max_workers 最低为 1，不再设置上限。"""
         coll = _make_collection(2)
         def mock_dl(course, episode, output_dir, quality="1080P",
                     stop_event=None, progress_callback=None, part_prefix="",
-                    quiet=False):
+                    quiet=False, defer_merge=False):
             return True
         with patch("bili_downloader.download_course_episode", side_effect=mock_dl):
             r1 = bd.download_selected_episodes(coll, [101], Path("/tmp"), max_workers=0)
             assert r1["max_workers"] == 1
             r2 = bd.download_selected_episodes(coll, [101], Path("/tmp"), max_workers=99)
-            assert r2["max_workers"] == 4
+            assert r2["max_workers"] == 99
 
     def test_concurrent_status_callback():
         """episode_status_callback should receive started/completed events."""
@@ -670,7 +830,7 @@ def run_tests():
         events = []
         def mock_dl(course, episode, output_dir, quality="1080P",
                     stop_event=None, progress_callback=None, part_prefix="",
-                    quiet=False):
+                    quiet=False, defer_merge=False):
             time.sleep(0.01)
             return True
         def cb(event):
@@ -695,7 +855,7 @@ def run_tests():
         coll = _make_collection(2)
         def mock_dl(course, episode, output_dir, quality="1080P",
                     stop_event=None, progress_callback=None, part_prefix="",
-                    quiet=False):
+                    quiet=False, defer_merge=False):
             return True
         with patch("bili_downloader.download_course_episode", side_effect=mock_dl):
             result = bd.download_selected_episodes(
@@ -703,15 +863,54 @@ def run_tests():
         assert result["max_workers"] == 2
         assert "cancelled_count" in result
 
+    def test_pipeline_download_and_merge_overlap():
+        """下载线程完成一集后应立即开始下一集，同时由合并线程池处理 ffmpeg。"""
+        import time, threading
+        coll = _make_collection(4)
+        lock = threading.Lock()
+        state = {"downloads": 0, "merges": 0, "overlap": False}
+
+        def mock_dl(course, episode, output_dir, quality="1080P",
+                    stop_event=None, progress_callback=None, part_prefix="",
+                    quiet=False, defer_merge=False):
+            with lock:
+                state["downloads"] += 1
+                if state["merges"] > 0:
+                    state["overlap"] = True
+            time.sleep(0.05)
+            with lock:
+                state["downloads"] -= 1
+            return {"video": Path("/tmp/v.m4s"), "audio": None,
+                    "output": Path("/tmp/o.mp4")}
+
+        def mock_merge(job, quiet=False):
+            with lock:
+                state["merges"] += 1
+                if state["downloads"] > 0:
+                    state["overlap"] = True
+            time.sleep(0.05)
+            with lock:
+                state["merges"] -= 1
+            return True
+
+        with patch("bili_downloader.download_course_episode", side_effect=mock_dl), \
+                patch("bili_downloader.merge_downloaded_streams", side_effect=mock_merge):
+            result = bd.download_selected_episodes(
+                coll, [101, 102, 103, 104], Path("/tmp"), "1080P", max_workers=2)
+
+        assert result["success"] == 4
+        assert state["overlap"], "下载和合并没有重叠执行"
+
     tests.extend([
         test_concurrent_order_preserved,
         test_concurrent_parallel_execution,
         test_concurrent_failure_continues,
         test_concurrent_stop_no_new_submits,
-        test_concurrent_max_workers_clamped,
+        test_concurrent_max_workers_minimum,
         test_concurrent_status_callback,
         test_concurrent_file_naming_no_conflict,
         test_concurrent_summary_fields,
+        test_pipeline_download_and_merge_overlap,
     ])
 
     passed = 0

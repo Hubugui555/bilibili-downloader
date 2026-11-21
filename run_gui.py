@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-"""Bilibili 视频下载器 - 启动入口"""
+"""BiliDown Studio — 快速启动入口"""
 import sys
 
 if sys.stdout is not None:
-    sys.stdout.reconfigure(encoding="utf-8")
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
 
 from gui import main as gui_main
 
